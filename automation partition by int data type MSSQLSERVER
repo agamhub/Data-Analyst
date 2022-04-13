@@ -1,0 +1,89 @@
+declare @range int = 0,
+	 @filegroup nvarchar(max) = '',
+	 @file nvarchar(max) = '',
+	 @pscheme nvarchar(max) = '',
+	 @pfunction nvarchar(max) = '',
+	 @table_name nvarchar(max) = 'TABLE2'
+
+begin
+begin try
+	if object_id(N'tempdb..#temp') is not null
+		begin
+			drop table #temp
+		end 
+		
+	if object_id(N'tempdb..#generatescript') is not null
+		begin
+			drop table #generatescript
+		end 
+	
+	select 
+			@range = i.rows
+	from   sys.tables as t 
+		   inner join sys.sysindexes as i 
+				   on t.object_id = i.id and i.indid < 2 
+	where t.name = @table_name
+
+	select o.name as table_name, 
+		  pf.name as partitionfunction, 
+		  ps.name as partitionscheme, 
+		  max(p.partition_number) partition_number,
+		  max(rv.value) as lastpartitionrange,
+		  case when max(rv.value) <= @range then 1 else 0 end as isrequiredmaintenance
+	into #temp
+	from sys.partitions p
+		inner join sys.indexes i on p.object_id = i.object_id and p.index_id = i.index_id
+		inner join sys.objects o on p.object_id = o.object_id
+		inner join sys.system_internals_allocation_units au on p.partition_id = au.container_id
+		inner join sys.partition_schemes ps on ps.data_space_id = i.data_space_id
+		inner join sys.partition_functions pf on pf.function_id = ps.function_id
+		inner join sys.partition_range_values rv on pf.function_id = rv.function_id and p.partition_number = rv.boundary_id
+	group by o.name, pf.name, ps.name
+	
+	select table_name, 
+		  partitionfunction, 
+		  partitionscheme, 
+		  lastpartitionrange,
+		  cast(lastpartitionrange as int) + 1000000  as newrange,
+		  'FG_' + cast(cast(partition_number as int) + 2 as nvarchar) + '_' + cast(year(getdate()) as nvarchar) as newfilegroup,
+		  'File_' + cast(cast(partition_number as int) + 2 as nvarchar) + '_' + cast(year(getdate()) as nvarchar) as filename,
+		  'E:\SQL.Data\' as file_path
+	into #generatescript
+	from #temp
+	where isrequiredmaintenance = 1
+
+	if @@rowcount > 0
+		begin 
+			select @filegroup = @filegroup + 
+				concat('if not exists(select 1 from test.sys.filegroups where name = ''',newfilegroup,''')
+				begin
+				  alter database test add filegroup ',newfilegroup,' 
+				end;'),
+				@file = @file + concat('if not exists(select 1 from test.sys.database_files where name = ''',filename,''')
+				begin
+				alter database test add file 
+				(name = ''',filename,''', 
+				filename = ''',file_path,filename,'.ndf'', 
+				size = 5mb, maxsize = unlimited, 
+				filegrowth = 10mb )
+				to filegroup ',newfilegroup, '
+				end;'),
+				@pscheme = @pscheme + concat('alter partition scheme ', partitionscheme, ' next used ',newfilegroup,';'),
+				@pfunction = @pfunction + concat('alter partition function ', partitionfunction, '() split range (''',newrange,''');')
+			from #generatescript
+
+			exec (@filegroup)
+			exec (@file)
+			exec (@pscheme)
+			exec (@pfunction)
+		end
+end try
+begin catch
+	declare @err nvarchar(500) = error_message()
+	raiserror('Error while adding partition range %s'
+			,16
+			,1
+			,@err
+			)
+end catch
+end
