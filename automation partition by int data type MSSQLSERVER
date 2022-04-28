@@ -87,3 +87,5 @@ begin catch
 			)
 end catch
 end
+
+-- test pull & merge
