@@ -4,7 +4,7 @@ declare @range int = 0,
 	 @pscheme nvarchar(max) = '',
 	 @pfunction nvarchar(max) = '',
 	 @table_name nvarchar(max) = 'TABLE2'
-
+-- test 123
 begin
 begin try
 	if object_id(N'tempdb..#temp') is not null
